@@ -9,7 +9,8 @@ st.set_page_config(page_title="2-C Gelişim Analizi", page_icon="📊", layout="
 st.title("📊 2-C Bütüncül Gelişim Analizi")
 
 SHEET_ID = "173-bZAG4XovDG8ZJlXj3CrgV5D7VAAZk83FxLFT0Tj8"
-BASE_URL_KAYITLAR = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kayitlar"
+# gviz yerine doğrudan export?format=csv kullanıyoruz; metin hücrelerini (27 (%90)) silmez!
+BASE_URL_KAYITLAR = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 BASE_URL_OGRENCILER = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Ogrenciler"
 
 def doks_to_puan(doks):
@@ -38,10 +39,11 @@ def okuma_notu_ayikla(metin):
     yuzde = float(yuzde_m.group(1).replace(',', '.')) if yuzde_m else np.nan
     return doks, yuzde
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=15)
 def verileri_getir(cache_buster):
-    # Not sütununu metin (str) olarak zorla ki '27 (%90)' gibi değerler NaN olmasın
+    # Not sütunundaki '27 (%90)' gibi metinlerin kaybolmaması için doğrudan export CSV okunur
     df = pd.read_csv(f"{BASE_URL_KAYITLAR}&cb={cache_buster}", dtype=str)
+    df = df.iloc[:, :7]
     df.columns = ['Tarih', 'Ogrenci_Adi', 'Alan', 'Ders', 'Alt_Beceri', 'Puan', 'Not']
     
     df['Ogrenci_Adi'] = df['Ogrenci_Adi'].fillna('').astype(str).str.strip()
