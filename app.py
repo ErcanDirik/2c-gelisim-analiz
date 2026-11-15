@@ -13,7 +13,7 @@ SHEET_ID = "173-bZAG4XovDG8ZJlXj3CrgV5D7VAAZk83FxLFT0Tj8"
 URL_KAYITLAR = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kayitlar"
 URL_OGRENCILER = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Ogrenciler"
 
-@st.cache_data(ttl=60)  # 60 saniyede bir tabloyu tazeler
+@st.cache_data(ttl=60)
 def verileri_getir():
     df = pd.read_csv(URL_KAYITLAR)
     df.columns = ['Tarih', 'Ogrenci_Adi', 'Alan', 'Ders', 'Alt_Beceri', 'Puan', 'Not']
@@ -43,10 +43,9 @@ if st.button("🔄 Verileri Yenile"):
 
 df, sinif_listesi = verileri_getir()
 
-# Sekmeler
 tab1, tab2, tab3 = st.tabs(["👤 Öğrenci Profili", "⏱️ Okuma Hızı (DKK)", "🟩 Sınıf Matrisi"])
 
-# ==================== 1. SEKME: ÖĞRENCİ RADAR GRAFİĞİ ====================
+# ==================== 1. SEKME: ÖĞRENCİ RADAR + OKUMA GELİŞİM ÇİZGİSİ ====================
 with tab1:
     secili_ogr = st.selectbox("Öğrenci Seçin:", sinif_listesi)
     ogr_veri = df[df['Ogrenci_Adi'] == secili_ogr]
@@ -81,32 +80,80 @@ with tab1:
         ax.set_title(f"{secili_ogr}\nBütüncül Gelişim Profili", fontsize=11, fontweight='bold', pad=15)
         st.pyplot(fig)
 
+        # Öğrencinin birden fazla okuma akıcılığı ölçümü varsa gelişim grafiği çiz
+        ogr_okuma = ogr_veri.dropna(subset=['DKK']).copy()
+        if not ogr_okuma.empty:
+            st.subheader("⏱️ Okuma Akıcılığı Seyri (DKK)")
+            if len(ogr_okuma) >= 2:
+                fig_ok, ax_ok = plt.subplots(figsize=(6, 2.8), dpi=150)
+                tarih_etiketleri = [str(t)[:10] for t in ogr_okuma['Tarih']]
+                ax_ok.plot(range(len(ogr_okuma)), ogr_okuma['DKK'].values, marker='o', color='#27ae60', linewidth=2.2)
+                for idx, val in enumerate(ogr_okuma['DKK'].values):
+                    ax_ok.text(idx, val + 2, f"{int(val)}", ha='center', fontweight='bold', fontsize=9)
+                ax_ok.set_xticks(range(len(ogr_okuma)))
+                ax_ok.set_xticklabels(tarih_etiketleri, rotation=20, fontsize=8)
+                ax_ok.set_ylim(0, ogr_okuma['DKK'].max() + 18)
+                ax_ok.set_ylabel("Kelime / Dk")
+                ax_ok.grid(True, linestyle=':', alpha=0.6)
+                st.pyplot(fig_ok)
+            else:
+                st.info(f"Tek ölçüm mevcut: **{int(ogr_okuma['DKK'].iloc[0])} kelime/dakika** ({str(ogr_okuma['Tarih'].iloc[0])[:10]})")
+
         st.subheader("Hedef Bazlı Puanlar")
         ozet_tablo = ogr_veri.groupby(['Ders', 'Alt_Beceri'])['Puan'].mean().round(1).reset_index()
         ozet_tablo.columns = ['Ders', 'Öğrenme Çıktısı', 'Ortalama']
         st.dataframe(ozet_tablo, use_container_width=True, hide_index=True)
 
-# ==================== 2. SEKME: SINIF OKUMA HIZI ====================
+# ==================== 2. SEKME: SINIF OKUMA HIZI VE GELİŞİM RAPORU ====================
 with tab2:
-    okuma_df = df.dropna(subset=['DKK']).groupby('Ogrenci_Adi')['DKK'].last().sort_values(ascending=True)
-    if okuma_df.empty:
+    okuma_kayitlari = df.dropna(subset=['DKK']).copy()
+    if okuma_kayitlari.empty:
         st.info("Henüz okuma hızı (DKK) verisi girilmemiş.")
     else:
-        sinif_ort = okuma_df.mean()
-        st.metric("Sınıf Okuma Ortalaması", f"{sinif_ort:.1f} kelime/dk")
+        # Her öğrenci için İlk, Son, Ölçüm Sayısı ve Fark hesapla
+        ozet_list = []
+        for ogr, grup in okuma_kayitlari.groupby('Ogrenci_Adi'):
+            ilk = int(grup['DKK'].iloc[0])
+            son = int(grup['DKK'].iloc[-1])
+            sayi = len(grup)
+            fark = son - ilk
+            gecmis = " → ".join([str(int(x)) for x in grup['DKK'].tolist()])
+            ozet_list.append({
+                'Öğrenci': ogr,
+                'İlk': ilk,
+                'Son': son,
+                'Fark': fark,
+                'Ölçüm': sayi,
+                'Gelişim Seyri (DKK)': gecmis
+            })
+        
+        okuma_ozet_df = pd.DataFrame(ozet_list).sort_values(by='Son', ascending=True)
+        sinif_ort = okuma_ozet_df['Son'].mean()
+        st.metric("Sınıf Güncel Okuma Ortalaması", f"{sinif_ort:.1f} kelime/dk")
 
-        fig2, ax2 = plt.subplots(figsize=(8, max(4, len(okuma_df) * 0.45)), dpi=150)
-        renkler = ['#27ae60' if v >= sinif_ort else '#e67e22' for v in okuma_df.values]
-        bars = ax2.barh(okuma_df.index, okuma_df.values, color=renkler, height=0.6)
+        fig2, ax2 = plt.subplots(figsize=(8.5, max(4, len(okuma_ozet_df) * 0.48)), dpi=150)
+        renkler = ['#27ae60' if v >= sinif_ort else '#e67e22' for v in okuma_ozet_df['Son']]
+        bars = ax2.barh(okuma_ozet_df['Öğrenci'], okuma_ozet_df['Son'], color=renkler, height=0.6)
         ax2.axvline(sinif_ort, color='#c0392b', linestyle='--', linewidth=1.6, label=f'Ortalama: {sinif_ort:.1f}')
-        for bar in bars:
+        
+        for bar, (_, row) in zip(bars, okuma_ozet_df.iterrows()):
             w = bar.get_width()
-            ax2.text(w + 1, bar.get_y() + bar.get_height()/2, f'{int(w)}', va='center', fontsize=8.5, fontweight='bold')
-        ax2.set_xlabel("Kelime / Dakika (DKK)")
-        ax2.set_xlim(0, okuma_df.max() + 15)
+            if row['Ölçüm'] > 1:
+                isaret = "+" if row['Fark'] >= 0 else ""
+                etiket = f"{int(w)} ({isaret}{row['Fark']})"
+            else:
+                etiket = f"{int(w)}"
+            ax2.text(w + 1, bar.get_y() + bar.get_height()/2, etiket, va='center', fontsize=8.5, fontweight='bold')
+            
+        ax2.set_xlabel("Güncel Kelime / Dakika (Parantez içi: İlk ölçüme göre değişim)")
+        ax2.set_xlim(0, okuma_ozet_df['Son'].max() + 22)
         ax2.legend()
         ax2.grid(axis='x', linestyle=':', alpha=0.5)
         st.pyplot(fig2)
+
+        st.subheader("Tüm Okuma Ölçümleri Geçmişi")
+        tablo_gosterim = okuma_ozet_df.sort_values(by='Son', ascending=False)[['Öğrenci', 'Ölçüm', 'Gelişim Seyri (DKK)', 'Fark']]
+        st.dataframe(tablo_gosterim, use_container_width=True, hide_index=True)
 
 # ==================== 3. SEKME: SINIF ISI HARİTASI ====================
 with tab3:
@@ -135,4 +182,3 @@ with tab3:
         plt.colorbar(im, shrink=0.5, label="Düzey (1-4)")
         ax3.set_title(f"2-C {secili_ders} Başarı Matrisi", fontweight='bold')
         st.pyplot(fig3)
-      
