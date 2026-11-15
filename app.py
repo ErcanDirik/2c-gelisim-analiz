@@ -23,6 +23,14 @@ def doks_to_puan(doks):
     else:
         return 4
 
+def okuma_notu_ayikla(metin):
+    s = str(metin).strip()
+    doks_m = re.search(r'^(\d+)', s) or re.search(r'(\d+)', s)
+    yuzde_m = re.search(r'\(\s*%?\s*(\d+(?:[.,]\d+)?)\s*%?\s*\)', s) or re.search(r'%\s*(\d+(?:[.,]\d+)?)', s)
+    doks = int(doks_m.group(1)) if doks_m else np.nan
+    yuzde = float(yuzde_m.group(1).replace(',', '.')) if yuzde_m else np.nan
+    return doks, yuzde
+
 @st.cache_data(ttl=60)
 def verileri_getir():
     df = pd.read_csv(URL_KAYITLAR)
@@ -34,14 +42,20 @@ def verileri_getir():
     df = df.dropna(subset=['Ogrenci_Adi', 'Puan'])
     df = df[~df['Alt_Beceri'].isin(['Xxxyyy', 'nan', ''])]
 
-    def doks_bul(metin):
-        eslesme = re.search(r'\d+', str(metin))
-        return int(eslesme.group()) if eslesme else np.nan
+    doks_list = []
+    yuzde_list = []
+    for _, r in df.iterrows():
+        hedef_kucuk = r['Alt_Beceri'].lower()
+        if 'okuma' in hedef_kucuk or 'akıcı' in hedef_kucuk:
+            d, y = okuma_notu_ayikla(r['Not'])
+            doks_list.append(d)
+            yuzde_list.append(y)
+        else:
+            doks_list.append(np.nan)
+            yuzde_list.append(np.nan)
 
-    df['DOKS'] = df.apply(
-        lambda r: doks_bul(r['Not']) if ('okuma' in r['Alt_Beceri'].lower() or 'akıcı' in r['Alt_Beceri'].lower()) else np.nan,
-        axis=1
-    )
+    df['DOKS'] = doks_list
+    df['Dogruluk_Yuzde'] = yuzde_list
 
     df['Puan'] = df.apply(
         lambda r: doks_to_puan(r['DOKS']) if not pd.isna(r['DOKS']) else min(4, max(1, r['Puan'])),
@@ -57,7 +71,7 @@ if st.button("🔄 Verileri Yenile"):
 
 df, sinif_listesi = verileri_getir()
 
-tab1, tab2, tab3, tab4 = st.tabs(["👤 Öğrenci & Yorum", "⏱️ DOKS (Okuma)", "🟩 Matris", "⚠️ Eksik Gözlem"])
+tab1, tab2, tab3, tab4 = st.tabs(["👤 Öğrenci & Yorum", "⏱️ DOKS & Doğruluk", "🟩 Matris", "⚠️ Eksik Gözlem"])
 
 # ==================== 1. SEKME: ÖĞRENCİ RADAR + e-OKUL YORUMU ====================
 with tab1:
@@ -102,8 +116,10 @@ with tab1:
         ogr_doks = ogr_veri.dropna(subset=['DOKS'])
         doks_cumle = ""
         if not ogr_doks.empty:
-            son_doks = int(ogr_doks['DOKS'].iloc[-1])
-            doks_cumle = f"Akıcı okuma değerlendirmesinde dakikada {son_doks} doğru kelime okuma (DOKS) düzeyine ulaşmıştır. "
+            son_satir = ogr_doks.iloc[-1]
+            son_doks = int(son_satir['DOKS'])
+            yuzde_bilgi = f" (%{int(son_satir['Dogruluk_Yuzde'])} doğruluk oranıyla)" if not pd.isna(son_satir['Dogruluk_Yuzde']) else ""
+            doks_cumle = f"Akıcı okuma değerlendirmesinde dakikada {son_doks} doğru kelime okuma{yuzde_bilgi} düzeyine ulaşmıştır. "
 
         yorum = f"{secili_ogr}, sınıf içi öğrenme süreçlerine katılım göstermektedir. {doks_cumle}"
         if guclu:
@@ -119,8 +135,9 @@ with tab1:
             st.subheader("⏱️ DOKS Gelişim Seyri")
             fig_ok, ax_ok = plt.subplots(figsize=(6, 2.6), dpi=150)
             ax_ok.plot(range(len(ogr_doks)), ogr_doks['DOKS'].values, marker='o', color='#27ae60', linewidth=2.2)
-            for idx, val in enumerate(ogr_doks['DOKS'].values):
-                ax_ok.text(idx, val + 2, f"{int(val)}", ha='center', fontweight='bold', fontsize=9)
+            for idx, (_, r) in enumerate(ogr_doks.iterrows()):
+                lbl = f"{int(r['DOKS'])} (%{int(r['Dogruluk_Yuzde'])})" if not pd.isna(r['Dogruluk_Yuzde']) else f"{int(r['DOKS'])}"
+                ax_ok.text(idx, r['DOKS'] + 2, lbl, ha='center', fontweight='bold', fontsize=8.5)
             ax_ok.set_xticks(range(len(ogr_doks)))
             ax_ok.set_xticklabels([str(t)[:10] for t in ogr_doks['Tarih']], rotation=20, fontsize=8)
             ax_ok.set_ylim(0, ogr_doks['DOKS'].max() + 18)
@@ -128,7 +145,7 @@ with tab1:
             ax_ok.grid(True, linestyle=':', alpha=0.6)
             st.pyplot(fig_ok)
 
-# ==================== 2. SEKME: SINIF DOKS SIRALAMASI ====================
+# ==================== 2. SEKME: SINIF DOKS & DOĞRULUK SIRALAMASI ====================
 with tab2:
     okuma_kayitlari = df.dropna(subset=['DOKS']).copy()
     if okuma_kayitlari.empty:
@@ -138,34 +155,47 @@ with tab2:
         for ogr, grup in okuma_kayitlari.groupby('Ogrenci_Adi'):
             ilk = int(grup['DOKS'].iloc[0])
             son = int(grup['DOKS'].iloc[-1])
+            son_yuzde = grup['Dogruluk_Yuzde'].iloc[-1]
             duzey = int(doks_to_puan(son))
+            
+            seyir_parcalari = []
+            for _, gr in grup.iterrows():
+                if not pd.isna(gr['Dogruluk_Yuzde']):
+                    seyir_parcalari.append(f"{int(gr['DOKS'])} (%{int(gr['Dogruluk_Yuzde'])})")
+                else:
+                    seyir_parcalari.append(f"{int(gr['DOKS'])}")
+
             ozet_list.append({
-                'Öğrenci': ogr, 'İlk': ilk, 'Son': son, 'Düzey (1-4)': duzey,
-                'Fark': son - ilk, 'Ölçüm': len(grup),
-                'Gelişim Seyri (DOKS)': " → ".join([str(int(x)) for x in grup['DOKS'].tolist()])
+                'Öğrenci': ogr,
+                'Son DOKS': son,
+                'Doğruluk (%)': f"%{int(son_yuzde)}" if not pd.isna(son_yuzde) else "-",
+                'Düzey (1-4)': duzey,
+                'Fark': son - ilk,
+                'Gelişim Seyri': " → ".join(seyir_parcalari)
             })
         
-        okuma_ozet_df = pd.DataFrame(ozet_list).sort_values(by='Son', ascending=True)
-        sinif_ort = okuma_ozet_df['Son'].mean()
+        okuma_ozet_df = pd.DataFrame(ozet_list).sort_values(by='Son DOKS', ascending=True)
+        sinif_ort = okuma_ozet_df['Son DOKS'].mean()
         st.metric("Sınıf Güncel DOKS Ortalaması", f"{sinif_ort:.1f} doks")
 
         fig2, ax2 = plt.subplots(figsize=(8.5, max(4, len(okuma_ozet_df) * 0.48)), dpi=150)
         renk_haritasi = {1: '#e74c3c', 2: '#f39c12', 3: '#3498db', 4: '#27ae60'}
         renkler = [renk_haritasi[d] for d in okuma_ozet_df['Düzey (1-4)']]
-        bars = ax2.barh(okuma_ozet_df['Öğrenci'], okuma_ozet_df['Son'], color=renkler, height=0.6)
+        bars = ax2.barh(okuma_ozet_df['Öğrenci'], okuma_ozet_df['Son DOKS'], color=renkler, height=0.6)
         ax2.axvline(sinif_ort, color='#2c3e50', linestyle='--', linewidth=1.5, label=f'Sınıf Ort: {sinif_ort:.1f}')
         
         for bar, (_, row) in zip(bars, okuma_ozet_df.iterrows()):
             w = bar.get_width()
-            etiket = f"{int(w)} doks [Düzey {row['Düzey (1-4)']}]"
+            yuzde_str = f" ({row['Doğruluk (%)']})" if row['Doğruluk (%)'] != "-" else ""
+            etiket = f"{int(w)}{yuzde_str} [Düzey {row['Düzey (1-4)']}]"
             ax2.text(w + 1, bar.get_y() + bar.get_height()/2, etiket, va='center', fontsize=8, fontweight='bold')
             
-        ax2.set_xlim(0, okuma_ozet_df['Son'].max() + 34)
+        ax2.set_xlim(0, okuma_ozet_df['Son DOKS'].max() + 38)
         ax2.legend()
         ax2.grid(axis='x', linestyle=':', alpha=0.5)
         st.pyplot(fig2)
 
-        st.dataframe(okuma_ozet_df.sort_values(by='Son', ascending=False)[['Öğrenci', 'Düzey (1-4)', 'Gelişim Seyri (DOKS)', 'Fark']], use_container_width=True, hide_index=True)
+        st.dataframe(okuma_ozet_df.sort_values(by='Son DOKS', ascending=False)[['Öğrenci', 'Düzey (1-4)', 'Doğruluk (%)', 'Gelişim Seyri', 'Fark']], use_container_width=True, hide_index=True)
 
 # ==================== 3. SEKME: SINIF ISI HARİTASI ====================
 with tab3:
