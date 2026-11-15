@@ -3,13 +3,14 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import re
+import time
 
 st.set_page_config(page_title="2-C Gelişim Analizi", page_icon="📊", layout="centered")
 st.title("📊 2-C Bütüncül Gelişim Analizi")
 
 SHEET_ID = "173-bZAG4XovDG8ZJlXj3CrgV5D7VAAZk83FxLFT0Tj8"
-URL_KAYITLAR = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kayitlar"
-URL_OGRENCILER = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Ogrenciler"
+BASE_URL_KAYITLAR = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kayitlar"
+BASE_URL_OGRENCILER = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Ogrenciler"
 
 def doks_to_puan(doks):
     if pd.isna(doks) or doks <= 0:
@@ -24,22 +25,33 @@ def doks_to_puan(doks):
         return 4
 
 def okuma_notu_ayikla(metin):
+    if pd.isna(metin):
+        return np.nan, np.nan
     s = str(metin).strip()
-    doks_m = re.search(r'^(\d+)', s) or re.search(r'(\d+)', s)
+    if s.lower() in ['', 'nan', 'none']:
+        return np.nan, np.nan
+        
+    doks_m = re.search(r'(\d+)', s)
     yuzde_m = re.search(r'\(\s*%?\s*(\d+(?:[.,]\d+)?)\s*%?\s*\)', s) or re.search(r'%\s*(\d+(?:[.,]\d+)?)', s)
+    
     doks = int(doks_m.group(1)) if doks_m else np.nan
     yuzde = float(yuzde_m.group(1).replace(',', '.')) if yuzde_m else np.nan
     return doks, yuzde
 
-@st.cache_data(ttl=60)
-def verileri_getir():
-    df = pd.read_csv(URL_KAYITLAR)
+@st.cache_data(ttl=30)
+def verileri_getir(cache_buster):
+    # Not sütununu metin (str) olarak zorla ki '27 (%90)' gibi değerler NaN olmasın
+    df = pd.read_csv(f"{BASE_URL_KAYITLAR}&cb={cache_buster}", dtype=str)
     df.columns = ['Tarih', 'Ogrenci_Adi', 'Alan', 'Ders', 'Alt_Beceri', 'Puan', 'Not']
-    df['Ogrenci_Adi'] = df['Ogrenci_Adi'].astype(str).str.strip()
-    df['Alt_Beceri'] = df['Alt_Beceri'].astype(str).str.strip()
+    
+    df['Ogrenci_Adi'] = df['Ogrenci_Adi'].fillna('').astype(str).str.strip()
+    df['Alt_Beceri'] = df['Alt_Beceri'].fillna('').astype(str).str.strip()
+    df['Alan'] = df['Alan'].fillna('').astype(str).str.strip()
+    df['Ders'] = df['Ders'].fillna('').astype(str).str.strip()
+    df['Not'] = df['Not'].fillna('').astype(str).str.strip()
     df['Puan'] = pd.to_numeric(df['Puan'], errors='coerce')
     
-    df = df.dropna(subset=['Ogrenci_Adi', 'Puan'])
+    df = df[(df['Ogrenci_Adi'] != '') & (df['Puan'].notna())]
     df = df[~df['Alt_Beceri'].isin(['Xxxyyy', 'nan', ''])]
 
     doks_list = []
@@ -62,14 +74,18 @@ def verileri_getir():
         axis=1
     )
 
-    ogr_df = pd.read_csv(URL_OGRENCILER, header=None)
+    ogr_df = pd.read_csv(f"{BASE_URL_OGRENCILER}&cb={cache_buster}", header=None, dtype=str)
     sinif = ogr_df[0].dropna().astype(str).str.strip().tolist()
     return df, sinif
 
+if 'cb' not in st.session_state:
+    st.session_state.cb = int(time.time())
+
 if st.button("🔄 Verileri Yenile"):
+    st.session_state.cb = int(time.time())
     st.cache_data.clear()
 
-df, sinif_listesi = verileri_getir()
+df, sinif_listesi = verileri_getir(st.session_state.cb)
 
 tab1, tab2, tab3, tab4 = st.tabs(["👤 Öğrenci & Yorum", "⏱️ DOKS & Doğruluk", "🟩 Matris", "⚠️ Eksik Gözlem"])
 
@@ -89,9 +105,9 @@ with tab1:
         degerler = []
         for k in kategoriler:
             if k in ['Duyuşsal', 'Psikomotor']:
-                alt = ogr_veri[ogr_veri['Alan'].str.strip() == k]['Puan']
+                alt = ogr_veri[ogr_veri['Alan'] == k]['Puan']
             else:
-                alt = ogr_veri[ogr_veri['Ders'].str.strip() == k]['Puan']
+                alt = ogr_veri[ogr_veri['Ders'] == k]['Puan']
             degerler.append(alt.mean() if not alt.empty else 0)
 
         degerler_kapali = degerler + [degerler[0]]
@@ -152,7 +168,7 @@ with tab2:
         st.info("Henüz DOKS verisi girilmemiş.")
     else:
         ozet_list = []
-        for ogr, grup in okuma_kayitlari.groupby('Ogrenci_Adi'):
+        for ogr, grup in okuma_kayitlari.groupby('Ogrenci_Adi', sort=False):
             ilk = int(grup['DOKS'].iloc[0])
             son = int(grup['DOKS'].iloc[-1])
             son_yuzde = grup['Dogruluk_Yuzde'].iloc[-1]
@@ -200,7 +216,7 @@ with tab2:
 # ==================== 3. SEKME: SINIF ISI HARİTASI ====================
 with tab3:
     secili_ders = st.selectbox("Ders Seçin:", ["Türkçe", "Matematik", "Hayat Bilgisi"])
-    ders_df = df[df['Ders'].str.strip() == secili_ders]
+    ders_df = df[df['Ders'] == secili_ders]
 
     if ders_df.empty:
         st.info(f"{secili_ders} dersi için henüz kayıt girilmemiş.")
