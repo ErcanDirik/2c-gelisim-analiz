@@ -9,7 +9,6 @@ st.set_page_config(page_title="2-C Gelişim Analizi", page_icon="📊", layout="
 st.title("📊 2-C Bütüncül Gelişim Analizi")
 
 SHEET_ID = "173-bZAG4XovDG8ZJlXj3CrgV5D7VAAZk83FxLFT0Tj8"
-# gviz yerine doğrudan export?format=csv kullanıyoruz; metin hücrelerini (27 (%90)) silmez!
 BASE_URL_KAYITLAR = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 BASE_URL_OGRENCILER = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Ogrenciler"
 
@@ -41,7 +40,6 @@ def okuma_notu_ayikla(metin):
 
 @st.cache_data(ttl=15)
 def verileri_getir(cache_buster):
-    # Not sütunundaki '27 (%90)' gibi metinlerin kaybolmaması için doğrudan export CSV okunur
     df = pd.read_csv(f"{BASE_URL_KAYITLAR}&cb={cache_buster}", dtype=str)
     df = df.iloc[:, :7]
     df.columns = ['Tarih', 'Ogrenci_Adi', 'Alan', 'Ders', 'Alt_Beceri', 'Puan', 'Not']
@@ -91,7 +89,7 @@ df, sinif_listesi = verileri_getir(st.session_state.cb)
 
 tab1, tab2, tab3, tab4 = st.tabs(["👤 Öğrenci & Yorum", "⏱️ DOKS & Doğruluk", "🟩 Matris", "⚠️ Eksik Gözlem"])
 
-# ==================== 1. SEKME: ÖĞRENCİ RADAR + e-OKUL YORUMU ====================
+# ==================== 1. SEKME: ÖĞRENCİ RADAR + DOKS SEYRİ + e-OKUL YORUMU ====================
 with tab1:
     secili_ogr = st.selectbox("Öğrenci Seçin:", sinif_listesi)
     ogr_veri = df[df['Ogrenci_Adi'] == secili_ogr]
@@ -99,9 +97,17 @@ with tab1:
     if ogr_veri.empty:
         st.info("Bu öğrenci için henüz kayıt bulunmuyor.")
     else:
-        col1, col2 = st.columns(2)
+        ogr_doks = ogr_veri.dropna(subset=['DOKS'])
+        
+        col1, col2, col3 = st.columns(3)
         col1.metric("Genel Ortalama", f"{ogr_veri['Puan'].mean():.2f} / 4")
-        col2.metric("Toplam Gözlem", f"{len(ogr_veri)} kayıt")
+        col2.metric("Toplam Gözlem", f"{len(ogr_veri)}")
+        if not ogr_doks.empty:
+            son_r = ogr_doks.iloc[-1]
+            y_ek = f" (%{int(son_r['Dogruluk_Yuzde'])})" if not pd.isna(son_r['Dogruluk_Yuzde']) else ""
+            col3.metric("Son DOKS", f"{int(son_r['DOKS'])}{y_ek}")
+        else:
+            col3.metric("Son DOKS", "-")
 
         kategoriler = ['Türkçe', 'Matematik', 'Hayat Bilgisi', 'Duyuşsal', 'Psikomotor']
         degerler = []
@@ -126,12 +132,33 @@ with tab1:
         ax.set_title(f"{secili_ogr}\nBütüncül Gelişim Profili", fontsize=11, fontweight='bold', pad=15)
         st.pyplot(fig)
 
+        # DOKS & Doğruluk Gelişim Seyri (1 veya daha fazla ölçüm varsa her zaman göster)
+        if not ogr_doks.empty:
+            st.subheader("⏱️ DOKS & Doğruluk Gelişim Seyri")
+            seyir_adimlari = []
+            for _, r in ogr_doks.iterrows():
+                y_str = f" (%{int(r['Dogruluk_Yuzde'])})" if not pd.isna(r['Dogruluk_Yuzde']) else ""
+                seyir_adimlari.append(f"**{int(r['DOKS'])}{y_str}** `[{str(r['Tarih'])[:10]}]`")
+            st.markdown(" → ".join(seyir_adimlari))
+
+            if len(ogr_doks) >= 2:
+                fig_ok, ax_ok = plt.subplots(figsize=(6, 2.6), dpi=150)
+                ax_ok.plot(range(len(ogr_doks)), ogr_doks['DOKS'].values, marker='o', color='#27ae60', linewidth=2.2)
+                for idx, (_, r) in enumerate(ogr_doks.iterrows()):
+                    lbl = f"{int(r['DOKS'])} (%{int(r['Dogruluk_Yuzde'])})" if not pd.isna(r['Dogruluk_Yuzde']) else f"{int(r['DOKS'])}"
+                    ax_ok.text(idx, r['DOKS'] + 2, lbl, ha='center', fontweight='bold', fontsize=8.5)
+                ax_ok.set_xticks(range(len(ogr_doks)))
+                ax_ok.set_xticklabels([str(t)[:10] for t in ogr_doks['Tarih']], rotation=20, fontsize=8)
+                ax_ok.set_ylim(0, ogr_doks['DOKS'].max() + 18)
+                ax_ok.set_ylabel("DOKS")
+                ax_ok.grid(True, linestyle=':', alpha=0.6)
+                st.pyplot(fig_ok)
+
         st.subheader("📝 e-Okul Gelişim Raporu Yorum Taslağı")
         hedef_ort = ogr_veri.groupby('Alt_Beceri')['Puan'].mean()
         guclu = [re.sub(r'^T\d+-[A-Z0-9.]+\s*', '', h).lower() for h, p in hedef_ort.items() if p >= 3.5]
         destek = [re.sub(r'^T\d+-[A-Z0-9.]+\s*', '', h).lower() for h, p in hedef_ort.items() if p < 2.5]
         
-        ogr_doks = ogr_veri.dropna(subset=['DOKS'])
         doks_cumle = ""
         if not ogr_doks.empty:
             son_satir = ogr_doks.iloc[-1]
@@ -148,20 +175,6 @@ with tab1:
             yorum += "Gözlemlenen tüm öğrenme çıktılarında istikrarlı ve başarılı bir gelişim grafiği çizmektedir."
 
         st.text_area("Kopyalayıp e-Okul'a yapıştırabilirsiniz:", yorum, height=110)
-
-        if len(ogr_doks) >= 2:
-            st.subheader("⏱️ DOKS Gelişim Seyri")
-            fig_ok, ax_ok = plt.subplots(figsize=(6, 2.6), dpi=150)
-            ax_ok.plot(range(len(ogr_doks)), ogr_doks['DOKS'].values, marker='o', color='#27ae60', linewidth=2.2)
-            for idx, (_, r) in enumerate(ogr_doks.iterrows()):
-                lbl = f"{int(r['DOKS'])} (%{int(r['Dogruluk_Yuzde'])})" if not pd.isna(r['Dogruluk_Yuzde']) else f"{int(r['DOKS'])}"
-                ax_ok.text(idx, r['DOKS'] + 2, lbl, ha='center', fontweight='bold', fontsize=8.5)
-            ax_ok.set_xticks(range(len(ogr_doks)))
-            ax_ok.set_xticklabels([str(t)[:10] for t in ogr_doks['Tarih']], rotation=20, fontsize=8)
-            ax_ok.set_ylim(0, ogr_doks['DOKS'].max() + 18)
-            ax_ok.set_ylabel("DOKS")
-            ax_ok.grid(True, linestyle=':', alpha=0.6)
-            st.pyplot(fig_ok)
 
 # ==================== 2. SEKME: SINIF DOKS & DOĞRULUK SIRALAMASI ====================
 with tab2:
