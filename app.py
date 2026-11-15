@@ -89,7 +89,7 @@ df, sinif_listesi = verileri_getir(st.session_state.cb)
 
 tab1, tab2, tab3, tab4 = st.tabs(["👤 Öğrenci & Yorum", "⏱️ DOKS & Doğruluk", "🟩 Matris", "⚠️ Eksik Gözlem"])
 
-# ==================== 1. SEKME: ÖĞRENCİ RADAR + DOKS SEYRİ + e-OKUL YORUMU ====================
+# ==================== 1. SEKME: ÖĞRENCİ RADAR + DOKS GRAFİĞİ + e-OKUL YORUMU ====================
 with tab1:
     secili_ogr = st.selectbox("Öğrenci Seçin:", sinif_listesi)
     ogr_veri = df[df['Ogrenci_Adi'] == secili_ogr]
@@ -132,7 +132,7 @@ with tab1:
         ax.set_title(f"{secili_ogr}\nBütüncül Gelişim Profili", fontsize=11, fontweight='bold', pad=15)
         st.pyplot(fig)
 
-        # DOKS & Doğruluk Gelişim Seyri (1 veya daha fazla ölçüm varsa her zaman göster)
+        # DOKS & Doğruluk Gelişim Grafiği (Tek ölçüm olsa bile her zaman çizilir)
         if not ogr_doks.empty:
             st.subheader("⏱️ DOKS & Doğruluk Gelişim Seyri")
             seyir_adimlari = []
@@ -141,18 +141,24 @@ with tab1:
                 seyir_adimlari.append(f"**{int(r['DOKS'])}{y_str}** `[{str(r['Tarih'])[:10]}]`")
             st.markdown(" → ".join(seyir_adimlari))
 
-            if len(ogr_doks) >= 2:
-                fig_ok, ax_ok = plt.subplots(figsize=(6, 2.6), dpi=150)
-                ax_ok.plot(range(len(ogr_doks)), ogr_doks['DOKS'].values, marker='o', color='#27ae60', linewidth=2.2)
-                for idx, (_, r) in enumerate(ogr_doks.iterrows()):
-                    lbl = f"{int(r['DOKS'])} (%{int(r['Dogruluk_Yuzde'])})" if not pd.isna(r['Dogruluk_Yuzde']) else f"{int(r['DOKS'])}"
-                    ax_ok.text(idx, r['DOKS'] + 2, lbl, ha='center', fontweight='bold', fontsize=8.5)
-                ax_ok.set_xticks(range(len(ogr_doks)))
-                ax_ok.set_xticklabels([str(t)[:10] for t in ogr_doks['Tarih']], rotation=20, fontsize=8)
-                ax_ok.set_ylim(0, ogr_doks['DOKS'].max() + 18)
-                ax_ok.set_ylabel("DOKS")
-                ax_ok.grid(True, linestyle=':', alpha=0.6)
-                st.pyplot(fig_ok)
+            fig_ok, ax_ok = plt.subplots(figsize=(6, 2.8), dpi=150)
+            x_degerleri = list(range(len(ogr_doks)))
+            y_degerleri = ogr_doks['DOKS'].values
+            
+            ax_ok.plot(x_degerleri, y_degerleri, marker='o', markersize=8, color='#27ae60', linewidth=2.2)
+            for idx, (_, r) in enumerate(ogr_doks.iterrows()):
+                lbl = f"{int(r['DOKS'])} (%{int(r['Dogruluk_Yuzde'])})" if not pd.isna(r['Dogruluk_Yuzde']) else f"{int(r['DOKS'])}"
+                ax_ok.text(idx, r['DOKS'] + 3, lbl, ha='center', fontweight='bold', fontsize=9, color='#1e8449')
+            
+            ax_ok.set_xticks(x_degerleri)
+            ax_ok.set_xticklabels([str(t)[:10] for t in ogr_doks['Tarih']], rotation=15, fontsize=8.5)
+            ax_ok.set_xlim(-0.5, max(0.5, len(ogr_doks) - 0.5))
+            ax_ok.set_ylim(0, max(100, ogr_doks['DOKS'].max() + 20))
+            ax_ok.set_ylabel("DOKS (Kelime)")
+            ax_ok.set_title(f"{secili_ogr} - Okuma Akıcılığı Grafiği", fontsize=10, fontweight='bold')
+            ax_ok.grid(True, linestyle=':', alpha=0.6)
+            plt.tight_layout()
+            st.pyplot(fig_ok)
 
         st.subheader("📝 e-Okul Gelişim Raporu Yorum Taslağı")
         hedef_ort = ogr_veri.groupby('Alt_Beceri')['Puan'].mean()
