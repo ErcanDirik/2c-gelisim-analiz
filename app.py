@@ -6,7 +6,8 @@ import time
 from datetime import datetime
 
 # API Anahtarınızı Streamlit Secrets'tan veya doğrudan buradan tanımlayın
-GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "AIzaSyDM0DfD_7D0R-fKdS82iEb_cTkZoqCEQEQ")
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+
 
 def ogrenci_verisini_ozetle(df_ogr: pd.DataFrame) -> str:
     """Öğrencinin Kayitlar tablosundaki tüm performansını AI için yapılandırılmış metne dönüştürür."""
