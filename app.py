@@ -1,282 +1,177 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import re
+import requests
+import json
 import time
+from datetime import datetime
 
-st.set_page_config(page_title="2-C Gelişim Analizi", page_icon="📊", layout="centered")
-st.title("📊 2-C Bütüncül Gelişim Analizi")
+# API Anahtarınızı Streamlit Secrets'tan veya doğrudan buradan tanımlayın
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "AIzaSyDM0DfD_7D0R-fKdS82iEb_cTkZoqCEQEQ")
 
-SHEET_ID = "173-bZAG4XovDG8ZJlXj3CrgV5D7VAAZk83FxLFT0Tj8"
-BASE_URL_KAYITLAR = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
-BASE_URL_OGRENCILER = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Ogrenciler"
-
-def doks_to_puan(doks):
-    if pd.isna(doks) or doks <= 0:
-        return np.nan
-    if doks <= 40:
-        return 1
-    elif doks <= 60:
-        return 2
-    elif doks <= 80:
-        return 3
-    else:
-        return 4
-
-def okuma_notu_ayikla(metin):
-    if pd.isna(metin):
-        return np.nan, np.nan
-    s = str(metin).strip()
-    if s.lower() in ['', 'nan', 'none']:
-        return np.nan, np.nan
-        
-    doks_m = re.search(r'(\d+)', s)
-    yuzde_m = re.search(r'\(\s*%?\s*(\d+(?:[.,]\d+)?)\s*%?\s*\)', s) or re.search(r'%\s*(\d+(?:[.,]\d+)?)', s)
+def ogrenci_verisini_ozetle(df_ogr: pd.DataFrame) -> str:
+    """Öğrencinin Kayitlar tablosundaki tüm performansını AI için yapılandırılmış metne dönüştürür."""
+    if df_ogr.empty:
+        return "Bu öğrenci için henüz kayıt bulunmuyor."
     
-    doks = int(doks_m.group(1)) if doks_m else np.nan
-    yuzde = float(yuzde_m.group(1).replace(',', '.')) if yuzde_m else np.nan
-    return doks, yuzde
-
-@st.cache_data(ttl=15)
-def verileri_getir(cache_buster):
-    df = pd.read_csv(f"{BASE_URL_KAYITLAR}&cb={cache_buster}", dtype=str)
-    df = df.iloc[:, :7]
-    df.columns = ['Tarih', 'Ogrenci_Adi', 'Alan', 'Ders', 'Alt_Beceri', 'Puan', 'Not']
+    ozet_satirlar = []
     
-    df['Ogrenci_Adi'] = df['Ogrenci_Adi'].fillna('').astype(str).str.strip()
-    df['Alt_Beceri'] = df['Alt_Beceri'].fillna('').astype(str).str.strip()
-    df['Alan'] = df['Alan'].fillna('').astype(str).str.strip()
-    df['Ders'] = df['Ders'].fillna('').astype(str).str.strip()
-    df['Not'] = df['Not'].fillna('').astype(str).str.strip()
-    df['Puan'] = pd.to_numeric(df['Puan'], errors='coerce')
+    # 1. Alan Bazlı Ortalamalar
+    alan_ort = df_ogr.groupby("Alan")["Puan"].mean().round(2).to_dict()
+    ozet_satirlar.append(f"Gelişim Alanı Ortalamaları (4 üzerinden): {alan_ort}")
     
-    df = df[(df['Ogrenci_Adi'] != '') & (df['Puan'].notna())]
-    df = df[~df['Alt_Beceri'].isin(['Xxxyyy', 'nan', ''])]
-
-    doks_list = []
-    yuzde_list = []
-    for _, r in df.iterrows():
-        hedef_kucuk = r['Alt_Beceri'].lower()
-        if 'okuma' in hedef_kucuk or 'akıcı' in hedef_kucuk:
-            d, y = okuma_notu_ayikla(r['Not'])
-            doks_list.append(d)
-            yuzde_list.append(y)
-        else:
-            doks_list.append(np.nan)
-            yuzde_list.append(np.nan)
-
-    df['DOKS'] = doks_list
-    df['Dogruluk_Yuzde'] = yuzde_list
-
-    df['Puan'] = df.apply(
-        lambda r: doks_to_puan(r['DOKS']) if not pd.isna(r['DOKS']) else min(4, max(1, r['Puan'])),
-        axis=1
-    )
-
-    ogr_df = pd.read_csv(f"{BASE_URL_OGRENCILER}&cb={cache_buster}", header=None, dtype=str)
-    sinif = ogr_df[0].dropna().astype(str).str.strip().tolist()
-    return df, sinif
-
-if 'cb' not in st.session_state:
-    st.session_state.cb = int(time.time())
-
-if st.button("🔄 Verileri Yenile"):
-    st.session_state.cb = int(time.time())
-    st.cache_data.clear()
-
-df, sinif_listesi = verileri_getir(st.session_state.cb)
-
-tab1, tab2, tab3, tab4 = st.tabs(["👤 Öğrenci & Yorum", "⏱️ DOKS & Doğruluk", "🟩 Matris", "⚠️ Eksik Gözlem"])
-
-# ==================== 1. SEKME: ÖĞRENCİ RADAR + DOKS GRAFİĞİ + e-OKUL YORUMU ====================
-with tab1:
-    secili_ogr = st.selectbox("Öğrenci Seçin:", sinif_listesi)
-    ogr_veri = df[df['Ogrenci_Adi'] == secili_ogr]
-
-    if ogr_veri.empty:
-        st.info("Bu öğrenci için henüz kayıt bulunmuyor.")
-    else:
-        ogr_doks = ogr_veri.dropna(subset=['DOKS'])
+    # 2. Okuma Akıcılığı (DOKS) Seyri
+    okuma_df = df_ogr[df_ogr["Hedef"].str.contains("okuma|akıcı", case=False, na=False)]
+    if not okuma_df.empty:
+        doks_gecmisi = []
+        for _, r in okuma_df.iterrows():
+            # Kanıt linkini temizle, sadece DOKS ve gözlem notunu al
+            temiz_not = str(r["Not"]).split("| Kanıt:")[0].strip()
+            doks_gecmisi.append(f"{r['Tarih'][:10]}: {temiz_not} (Puan: {r['Puan']}/4)")
+        ozet_satirlar.append("Okuma Akıcılığı (DOKS) Geçmişi:\n- " + "\n- ".join(doks_gecmisi))
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Genel Ortalama", f"{ogr_veri['Puan'].mean():.2f} / 4")
-        col2.metric("Toplam Gözlem", f"{len(ogr_veri)}")
-        if not ogr_doks.empty:
-            son_r = ogr_doks.iloc[-1]
-            y_ek = f" (%{int(son_r['Dogruluk_Yuzde'])})" if not pd.isna(son_r['Dogruluk_Yuzde']) else ""
-            col3.metric("Son DOKS", f"{int(son_r['DOKS'])}{y_ek}")
-        else:
-            col3.metric("Son DOKS", "-")
-
-        kategoriler = ['Türkçe', 'Matematik', 'Hayat Bilgisi', 'Duyuşsal', 'Psikomotor']
-        degerler = []
-        for k in kategoriler:
-            if k in ['Duyuşsal', 'Psikomotor']:
-                alt = ogr_veri[ogr_veri['Alan'] == k]['Puan']
-            else:
-                alt = ogr_veri[ogr_veri['Ders'] == k]['Puan']
-            degerler.append(alt.mean() if not alt.empty else 0)
-
-        degerler_kapali = degerler + [degerler[0]]
-        acilar = np.linspace(0, 2 * np.pi, len(kategoriler), endpoint=False).tolist() + [0]
-
-        fig, ax = plt.subplots(figsize=(5, 5), subplot_kw=dict(polar=True), dpi=150)
-        ax.fill(acilar, degerler_kapali, color='#2980b9', alpha=0.25)
-        ax.plot(acilar, degerler_kapali, color='#2980b9', linewidth=2.2, marker='o')
-        ax.set_xticks(acilar[:-1])
-        ax.set_xticklabels(kategoriler, fontsize=9, fontweight='bold')
-        ax.set_ylim(0, 4)
-        ax.set_yticks([1, 2, 3, 4])
-        ax.set_yticklabels(['1', '2', '3', '4'], fontsize=8)
-        ax.set_title(f"{secili_ogr}\nBütüncül Gelişim Profili", fontsize=11, fontweight='bold', pad=15)
-        st.pyplot(fig)
-
-        # DOKS & Doğruluk Gelişim Grafiği (Tek ölçüm olsa bile her zaman çizilir)
-        if not ogr_doks.empty:
-            st.subheader("⏱️ DOKS & Doğruluk Gelişim Seyri")
-            seyir_adimlari = []
-            for _, r in ogr_doks.iterrows():
-                y_str = f" (%{int(r['Dogruluk_Yuzde'])})" if not pd.isna(r['Dogruluk_Yuzde']) else ""
-                seyir_adimlari.append(f"**{int(r['DOKS'])}{y_str}** `[{str(r['Tarih'])[:10]}]`")
-            st.markdown(" → ".join(seyir_adimlari))
-
-            fig_ok, ax_ok = plt.subplots(figsize=(6, 2.8), dpi=150)
-            x_degerleri = list(range(len(ogr_doks)))
-            y_degerleri = ogr_doks['DOKS'].values
-            
-            ax_ok.plot(x_degerleri, y_degerleri, marker='o', markersize=8, color='#27ae60', linewidth=2.2)
-            for idx, (_, r) in enumerate(ogr_doks.iterrows()):
-                lbl = f"{int(r['DOKS'])} (%{int(r['Dogruluk_Yuzde'])})" if not pd.isna(r['Dogruluk_Yuzde']) else f"{int(r['DOKS'])}"
-                ax_ok.text(idx, r['DOKS'] + 3, lbl, ha='center', fontweight='bold', fontsize=9, color='#1e8449')
-            
-            ax_ok.set_xticks(x_degerleri)
-            ax_ok.set_xticklabels([str(t)[:10] for t in ogr_doks['Tarih']], rotation=15, fontsize=8.5)
-            ax_ok.set_xlim(-0.5, max(0.5, len(ogr_doks) - 0.5))
-            ax_ok.set_ylim(0, max(100, ogr_doks['DOKS'].max() + 20))
-            ax_ok.set_ylabel("DOKS (Kelime)")
-            ax_ok.set_title(f"{secili_ogr} - Okuma Akıcılığı Grafiği", fontsize=10, fontweight='bold')
-            ax_ok.grid(True, linestyle=':', alpha=0.6)
-            plt.tight_layout()
-            st.pyplot(fig_ok)
-
-        st.subheader("📝 e-Okul Gelişim Raporu Yorum Taslağı")
-        hedef_ort = ogr_veri.groupby('Alt_Beceri')['Puan'].mean()
-        guclu = [re.sub(r'^T\d+-[A-Z0-9.]+\s*', '', h).lower() for h, p in hedef_ort.items() if p >= 3.5]
-        destek = [re.sub(r'^T\d+-[A-Z0-9.]+\s*', '', h).lower() for h, p in hedef_ort.items() if p < 2.5]
+    # 3. SRSD 4 Boyutlu Yazma Gelişimi Bulguları
+    srsd_df = df_ogr[df_ogr["Not"].str.contains(r"\[SRSD", case=False, na=False)]
+    if not srsd_df.empty:
+        srsd_list = []
+        for _, r in srsd_df.iterrows():
+            temiz_not = str(r["Not"]).split("| Kanıt:")[0].strip()
+            srsd_list.append(f"{temiz_not} -> Puan: {r['Puan']}/4")
+        ozet_satirlar.append("SRSD Yazma Analizi Sonuçları:\n- " + "\n- ".join(srsd_list))
         
-        doks_cumle = ""
-        if not ogr_doks.empty:
-            son_satir = ogr_doks.iloc[-1]
-            son_doks = int(son_satir['DOKS'])
-            yuzde_bilgi = f" (%{int(son_satir['Dogruluk_Yuzde'])} doğruluk oranıyla)" if not pd.isna(son_satir['Dogruluk_Yuzde']) else ""
-            doks_cumle = f"Akıcı okuma değerlendirmesinde dakikada {son_doks} doğru kelime okuma{yuzde_bilgi} düzeyine ulaşmıştır. "
+    # 4. Diğer Akademik, Oyun ve AI Çalışma Kâğıdı Gözlemleri
+    diger_df = df_ogr[~df_ogr.index.isin(okuma_df.index) & ~df_ogr.index.isin(srsd_df.index)]
+    if not diger_df.empty:
+        diger_list = []
+        for _, r in diger_df.tail(15).iterrows(): # Son 15 gözlem
+            temiz_not = str(r["Not"]).split("| Kanıt:")[0].strip()
+            diger_list.append(f"[{r['Ders']}] {r['Hedef']} -> Puan: {r['Puan']}/4 ({temiz_not})")
+        ozet_satirlar.append("Akademik / Oyun / Çalışma Kâğıdı Gözlemleri:\n- " + "\n- ".join(diger_list))
+        
+    return "\n\n".join(ozet_satirlar)
 
-        yorum = f"{secili_ogr}, sınıf içi öğrenme süreçlerine katılım göstermektedir. {doks_cumle}"
-        if guclu:
-            yorum += f"Özellikle {', '.join(guclu[:2])} becerilerinde yüksek düzeyde başarı sergilemiştir. "
-        if destek:
-            yorum += f"Bununla birlikte {', '.join(destek[:2])} alanlarında düzenli tekrar ve bireysel destekle gelişimini sürdürmesi faydalı olacaktır."
-        else:
-            yorum += "Gözlemlenen tüm öğrenme çıktılarında istikrarlı ve başarılı bir gelişim grafiği çizmektedir."
 
-        st.text_area("Kopyalayıp e-Okul'a yapıştırabilirsiniz:", yorum, height=110)
+def gemini_karne_yorumu_uret(ogrenci_adi: str, veri_ozeti: str, ton: str = "Yapıcı ve Dengeli") -> str:
+    """Gemini 2.5 Flash API kullanarak kişiselleştirilmiş pedagojik karne yorumu üretir."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    prompt = f"""
+    Sen Türkiye Yüzyılı Maarif Modeli (TYMM) bütüncül değerlendirme yaklaşımını benimseyen deneyimli bir 2. sınıf sınıf öğretmenisin.
+    Aşağıdaki somut sınıf içi gözlem, okuma hızı (DOKS), oyun performansı ve SRSD yazma analizi verilerine dayanarak **{ogrenci_adi}** adlı öğrencinin velisine sunulacak bireysel gelişim karnesi değerlendirme metnini yaz.
 
-# ==================== 2. SEKME: SINIF DOKS & DOĞRULUK SIRALAMASI ====================
-with tab2:
-    okuma_kayitlari = df.dropna(subset=['DOKS']).copy()
-    if okuma_kayitlari.empty:
-        st.info("Henüz DOKS verisi girilmemiş.")
-    else:
-        ozet_list = []
-        for ogr, grup in okuma_kayitlari.groupby('Ogrenci_Adi', sort=False):
-            ilk = int(grup['DOKS'].iloc[0])
-            son = int(grup['DOKS'].iloc[-1])
-            son_yuzde = grup['Dogruluk_Yuzde'].iloc[-1]
-            duzey = int(doks_to_puan(son))
-            
-            seyir_parcalari = []
-            for _, gr in grup.iterrows():
-                if not pd.isna(gr['Dogruluk_Yuzde']):
-                    seyir_parcalari.append(f"{int(gr['DOKS'])} (%{int(gr['Dogruluk_Yuzde'])})")
+    Kurallar:
+    1. Basmakalıp ("Çok zeki ama çalışmıyor", "Başarılarının devamını dilerim") ifadeler KESİNLİKLE kullanma.
+    2. Doğrudan verideki somut kanıtlara atıf yap (Örn: okuma hızındaki artışı, hikâye kurgusundaki başarısını veya kelimeler arası boşluk/onluk bozma gibi spesifik gelişim alanlarını somutlaştır).
+    3. Yazma gelişimi verisi varsa; çocuğun hayal gücü/kurgu becerisi ile mekanik yazım/boşluk becerisini birbirinden ayırarak veliyi doğru yönlendir.
+    4. Metin üslubu: **{ton}**.
+    5. Uzunluk: Veli karnesi kutusuna tam sığacak şekilde 4-5 cümlelik (yaklaşık 70-95 kelime) akıcı, tek veya iki paragraf halinde Türkçe bir metin yaz. Sadece yorum metnini döndür, başlık ekleme.
+
+    ÖĞRENCİ VERİLERİ:
+    {veri_ozeti}
+    """
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.35}
+    }
+    
+    resp = requests.post(url, json=payload, timeout=30)
+    data = resp.json()
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message", "API Hatası"))
+    
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+def ai_pedagog_modulu_goster(df_kayitlar: pd.DataFrame, ogrenci_listesi: list, gs_client=None, sheet_id: str = None):
+    """Streamlit arayüzünde AI Pedagog & Karne Yorumu Üretici sekmesini çizer."""
+    st.subheader("🧠 AI Pedagog & Bireysel Gelişim Raporu Asistanı")
+    st.caption("Öğrencinin DOKS ivmesini, SRSD 4 boyutlu yazma profilini ve oyun/kâğıt analizlerini sentezleyerek kişiselleştirilmiş veli geri bildirimi üretir.")
+
+    mod = st.radio("Çalışma Modu Seçin:", ["👤 Tekli Öğrenci İncele & Yorum Üret", "📚 Tüm Sınıf İçin Toplu Yorum Üret (Excel İndir)"], horizontal=True)
+    ton = st.selectbox("Geri Bildirim Tonu:", ["Yapıcı, Sıcak ve Veliye Ev Önerisi Sunan", "Resmi ve Akademik Odaklı", "Motive Edici ve Güçlü Yönleri Öne Çıkaran"])
+
+    st.divider()
+
+    # ---------------- MOD 1: TEKLİ ÖĞRENCİ ----------------
+    if mod.startswith("👤"):
+        secili_ogr = st.selectbox("Öğrenci Seçin:", ogrenci_listesi)
+        df_ogr = df_kayitlar[df_kayitlar["Ogrenci"] == secili_ogr]
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.markdown("**📊 AI'ya Gönderilecek Ham Veri Özeti**")
+            veri_ozeti = ogrenci_verisini_ozetle(df_ogr)
+            st.text_area("Sistem Tarafından Derlenen Kanıtlar", veri_ozeti, height=260, disabled=True)
+
+        with col2:
+            st.markdown("**✍️ Üretilen Veli Karnesi Değerlendirmesi**")
+            if st.button("🤖 Pedagojik Yorum Üret", type="primary", use_container_width=True):
+                if df_ogr.empty:
+                    st.warning("Bu öğrenciye ait veri bulunmadığı için yorum üretilemiyor.")
                 else:
-                    seyir_parcalari.append(f"{int(gr['DOKS'])}")
+                    with st.spinner(f"{secili_ogr} verileri analiz ediliyor..."):
+                        try:
+                            yorum = gemini_karne_yorumu_uret(secili_ogr, veri_ozeti, ton)
+                            st.session_state[f"yorum_{secili_ogr}"] = yorum
+                        except Exception as e:
+                            st.error(f"Hata oluştu: {e}")
 
-            ozet_list.append({
-                'Öğrenci': ogr,
-                'Son DOKS': son,
-                'Doğruluk (%)': f"%{int(son_yuzde)}" if not pd.isna(son_yuzde) else "-",
-                'Düzey (1-4)': duzey,
-                'Fark': son - ilk,
-                'Gelişim Seyri': " → ".join(seyir_parcalari)
-            })
+            mevcut_yorum = st.session_state.get(f"yorum_{secili_ogr}", "")
+            duzenlenen_yorum = st.text_area("Metni düzenleyip kopyalayabilir veya Sheets'e kaydedebilirsiniz:", value=mevcut_yorum, height=195)
+
+            if duzenlenen_yorum and gs_client and sheet_id:
+                if st.button("💾 Onayla ve Google Sheets 'Karne_Yorumlari' Sekmesine Kaydet", use_container_width=True):
+                    try:
+                        sh = gs_client.open_by_key(sheet_id)
+                        try:
+                            ws = sh.worksheet("Karne_Yorumlari")
+                        except Exception:
+                            ws = sh.add_worksheet(title="Karne_Yorumlari", rows=100, cols=3)
+                            ws.append_row(["Ogrenci", "Tarih", "Pedagojik_Yorum"])
+                        
+                        tarih_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+                        ws.append_row([secili_ogr, tarih_str, duzenlenen_yorum])
+                        st.success(f"✅ {secili_ogr} yorumu Google Sheets'e kaydedildi!")
+                    except Exception as e:
+                        st.error(f"Sheets kayıt hatası: {e}")
+
+    # ---------------- MOD 2: TÜM SINIF TOPLU ÜRETİM ----------------
+    else:
+        st.info("💡 Ücretsiz API hız limitine (15 istek/dakika) takılmamak için sistem her öğrenci arasında otomatik 4.2 saniye bekler. 28 öğrencilik sınıf yaklaşık 2 dakikada tamamlanır.")
         
-        okuma_ozet_df = pd.DataFrame(ozet_list).sort_values(by='Son DOKS', ascending=True)
-        sinif_ort = okuma_ozet_df['Son DOKS'].mean()
-        st.metric("Sınıf Güncel DOKS Ortalaması", f"{sinif_ort:.1f} doks")
+        if st.button("🚀 Tüm Sınıfın Karne Yorumlarını Oluştur", type="primary"):
+            ilerleme = st.progress(0)
+            durum = st.empty()
+            sonuclar = []
 
-        fig2, ax2 = plt.subplots(figsize=(8.5, max(4, len(okuma_ozet_df) * 0.48)), dpi=150)
-        renk_haritasi = {1: '#e74c3c', 2: '#f39c12', 3: '#3498db', 4: '#27ae60'}
-        renkler = [renk_haritasi[d] for d in okuma_ozet_df['Düzey (1-4)']]
-        bars = ax2.barh(okuma_ozet_df['Öğrenci'], okuma_ozet_df['Son DOKS'], color=renkler, height=0.6)
-        ax2.axvline(sinif_ort, color='#2c3e50', linestyle='--', linewidth=1.5, label=f'Sınıf Ort: {sinif_ort:.1f}')
-        
-        for bar, (_, row) in zip(bars, okuma_ozet_df.iterrows()):
-            w = bar.get_width()
-            yuzde_str = f" ({row['Doğruluk (%)']})" if row['Doğruluk (%)'] != "-" else ""
-            etiket = f"{int(w)}{yuzde_str} [Düzey {row['Düzey (1-4)']}]"
-            ax2.text(w + 1, bar.get_y() + bar.get_height()/2, etiket, va='center', fontsize=8, fontweight='bold')
-            
-        ax2.set_xlim(0, okuma_ozet_df['Son DOKS'].max() + 38)
-        ax2.legend()
-        ax2.grid(axis='x', linestyle=':', alpha=0.5)
-        st.pyplot(fig2)
+            for idx, ogr in enumerate(ogrenci_listesi):
+                durum.text(f"⏳ ({idx + 1}/{len(ogrenci_listesi)}) {ogr} analiz ediliyor...")
+                df_ogr = df_kayitlar[df_kayitlar["Ogrenci"] == ogr]
+                
+                if df_ogr.empty:
+                    sonuclar.append({"Öğrenci": ogr, "Kayıt Sayısı": 0, "Karne Yorumu": "Henüz yeterli gözlem verisi girilmemiştir."})
+                else:
+                    ozet = ogrenci_verisini_ozetle(df_ogr)
+                    try:
+                        yorum = gemini_karne_yorumu_uret(ogr, ozet, ton)
+                        sonuclar.append({"Öğrenci": ogr, "Kayıt Sayısı": len(df_ogr), "Karne Yorumu": yorum})
+                    except Exception as e:
+                        sonuclar.append({"Öğrenci": ogr, "Kayıt Sayısı": len(df_ogr), "Karne Yorumu": f"Hata: {e}"})
+                    
+                    # Ücretsiz API 15 RPM limitini korumak için güvenli bekleme
+                    if idx < len(ogrenci_listesi) - 1:
+                        time.sleep(4.2)
+                
+                ilerleme.progress((idx + 1) / len(ogrenci_listesi))
 
-        st.dataframe(okuma_ozet_df.sort_values(by='Son DOKS', ascending=False)[['Öğrenci', 'Düzey (1-4)', 'Doğruluk (%)', 'Gelişim Seyri', 'Fark']], use_container_width=True, hide_index=True)
+            durum.success("✅ Tüm sınıfın pedagojik değerlendirme metinleri hazır!")
+            df_sonuc = pd.DataFrame(sonuclar)
+            st.dataframe(df_sonuc, use_container_width=True, hide_index=True)
 
-# ==================== 3. SEKME: SINIF ISI HARİTASI ====================
-with tab3:
-    secili_ders = st.selectbox("Ders Seçin:", ["Türkçe", "Matematik", "Hayat Bilgisi"])
-    ders_df = df[df['Ders'] == secili_ders]
-
-    if ders_df.empty:
-        st.info(f"{secili_ders} dersi için henüz kayıt girilmemiş.")
-    else:
-        pivot = ders_df.pivot_table(index='Ogrenci_Adi', columns='Alt_Beceri', values='Puan', aggfunc='mean').reindex(sinif_listesi)
-        kisa_sutunlar = [c.split('.')[0] if c.startswith('T') else c[:14] for c in pivot.columns]
-
-        fig3, ax3 = plt.subplots(figsize=(max(6, len(kisa_sutunlar) * 1.3), 9), dpi=150)
-        im = ax3.imshow(pivot.values, cmap='RdYlGn', vmin=1, vmax=4, aspect='auto')
-        ax3.set_xticks(np.arange(len(kisa_sutunlar)))
-        ax3.set_yticks(np.arange(len(sinif_listesi)))
-        ax3.set_xticklabels(kisa_sutunlar, fontweight='bold', fontsize=8.5)
-        ax3.set_yticklabels(sinif_listesi, fontsize=8)
-
-        for i in range(len(sinif_listesi)):
-            for j in range(len(kisa_sutunlar)):
-                val = pivot.values[i, j]
-                metin = f"{val:.1f}" if not np.isnan(val) else "-"
-                ax3.text(j, i, metin, ha="center", va="center", color="black", fontsize=7.5, fontweight='bold')
-
-        plt.colorbar(im, shrink=0.5, label="Düzey (1-4)")
-        ax3.set_title(f"2-C {secili_ders} Başarı Matrisi", fontweight='bold')
-        st.pyplot(fig3)
-
-# ==================== 4. SEKME: EKSİK GÖZLEM & DESTEK İHTİYACI ====================
-with tab4:
-    st.subheader("🚨 Desteklenmesi Gereken Alanlar (Ort. < 2.0)")
-    dusuk_df = df.groupby(['Ogrenci_Adi', 'Ders', 'Alt_Beceri'])['Puan'].mean().reset_index()
-    dusuk_df = dusuk_df[dusuk_df['Puan'] < 2.0].sort_values(by='Puan')
-    if dusuk_df.empty:
-        st.success("Ortalaması 2.0 altında kalan kayıt bulunmuyor.")
-    else:
-        dusuk_df['Puan'] = dusuk_df['Puan'].round(1)
-        st.dataframe(dusuk_df, use_container_width=True, hide_index=True)
-
-    st.subheader("📋 Hiç Gözlem Girilmeyen Öğrenciler")
-    kayitli_ogrenciler = set(df['Ogrenci_Adi'].unique())
-    eksik_ogrenciler = [o for o in sinif_listesi if o not in kayitli_ogrenciler]
-    if eksik_ogrenciler:
-        st.warning(", ".join(eksik_ogrenciler))
-    else:
-        st.success("28 öğrencinin tamamı için en az 1 gözlem kaydı mevcut.")
+            csv_veri = df_sonuc.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                label="📥 Tüm Yorumları Excel (CSV) Olarak İndir",
+                data=csv_veri,
+                file_name=f"2C_AI_Karne_Yorumlari_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
