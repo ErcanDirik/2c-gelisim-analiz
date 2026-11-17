@@ -23,11 +23,10 @@ def verileri_yukle():
     base_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet="
     
     df_kayit = pd.read_csv(base_url + "Kayitlar")
-    df_ogr = pd.read_csv(base_url + "Ogrenciler")
+    df_ogr = pd.read_csv(base_url + "Ogrenciler", header=None)
     df_hedef = pd.read_csv(base_url + "Hedefler")
 
     df_kayit.columns = [c.strip() for c in df_kayit.columns]
-    # Standart sütun isimlerine eşitle
     beklenen = ["Tarih", "Ogrenci", "Alan", "Ders", "Hedef", "Puan", "Not"]
     if len(df_kayit.columns) >= 7:
         df_kayit = df_kayit.iloc[:, :7]
@@ -51,7 +50,7 @@ def verileri_yukle():
     )
     ogrenci_listesi = [
         o for o in ogrenci_listesi
-        if o.lower() not in ["ogrenci", "öğrenci", "ad soyad", "nan", ""]
+        if o.lower() not in ["ogrenci", "öğrenci", "öğrenci adı", "ogrenci adi", "ad soyad", "nan", ""]
     ]
 
     return df_kayit, ogrenci_listesi, df_hedef
