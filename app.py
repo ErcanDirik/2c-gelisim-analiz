@@ -8,7 +8,8 @@ st.set_page_config(page_title="2-C Bütüncül Gelişim Analiz Paneli", layout="
 
 # API ve Tablo Bilgileri (Streamlit Secrets üzerinden güvenli okuma)
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
-SHEET_ID = st.secrets.get("SHEET_ID", "BURAYA_GOOGLE_SHEETS_ID_YAZIN")
+SHEET_ID = st.secrets.get("SHEET_ID", "")
+
 
 
 @st.cache_data(ttl=60)
