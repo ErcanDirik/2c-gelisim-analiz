@@ -31,66 +31,43 @@ SHEET_ID = get_secret("SHEET_ID", DEFAULT_SHEET_ID)
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "")
 
 
-def gsheet_json_satirlari_getir(sheet_id, sheet_name):
+def gsheet_excel_yukle(sheet_id):
     """
-    Google Sheets'ten veriyi CSV yerine JSON olarak çeker; böylece aynı sütunda
-    hem saf sayı ('116') hem metin ('90 (%100)') olsa bile hiçbir hücre boş dönmez.
+    Google Sheets'i gviz sorgu filtresine takılmadan doğrudan XLSX olarak indirir.
+    Böylece aynı sütunda hem sayı ('116') hem metin ('90 (%100)') olsa bile
+    77-80. satırlardaki 2. ölçümler asla boş dönmez.
     """
-    encoded_name = urllib.parse.quote(sheet_name)
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:json&sheet={encoded_name}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        ham_metin = resp.read().decode("utf-8")
-
-    veri = json.loads(ham_metin[ham_metin.find("{"):ham_metin.rfind("}") + 1])
-    satirlar = []
-    for row in veri.get("table", {}).get("rows", []):
-        satir = []
-        for cell in (row.get("c") or []):
-            if cell is None:
-                satir.append("")
-            elif cell.get("f") is not None:
-                satir.append(str(cell["f"]).strip())
-            elif cell.get("v") is not None:
-                satir.append(str(cell["v"]).strip())
-            else:
-                satir.append("")
-        satirlar.append(satir)
-    return satirlar
-
-
-def esnek_tarih_ayikla(tarih_metni):
-    metin = str(tarih_metni or "").strip()
-    if not metin:
-        return pd.NaT
-    if re.match(r"^\d{4}-\d{2}-\d{2}", metin):
-        return pd.to_datetime(metin, format="mixed", dayfirst=False, errors="coerce")
-    return pd.to_datetime(metin, format="mixed", dayfirst=True, errors="coerce")
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+    tum_sayfalar = pd.read_excel(url, sheet_name=None, header=None, dtype=str)
+    return tum_sayfalar
 
 
 @st.cache_data(ttl=15)
 def verileri_yukle(sheet_id):
-    # 1. Ogrenciler sekmesi (1. satırdan itibaren 28 öğrenci)
+    sayfalar = gsheet_excel_yukle(sheet_id)
+
+    # 1. Ogrenciler sekmesi (1-28. satırlar)
     ogrenciler = []
-    try:
-        ogr_satirlar = gsheet_json_satirlari_getir(sheet_id, "Ogrenciler")
-        for s in ogr_satirlar:
-            if s and s[0] and s[0].lower() not in ("ogrenci", "ogrenci_adi", "öğrenci", "ad soyad"):
-                ogrenciler.append(s[0])
-    except Exception as e:
-        st.warning(f"Öğrenci listesi okunurken uyarı: {e}")
+    if "Ogrenciler" in sayfalar and not sayfalar["Ogrenciler"].empty:
+        for val in sayfalar["Ogrenciler"].iloc[:, 0].dropna():
+            isim = str(val).strip()
+            if isim and isim.lower() not in ("ogrenci", "ogrenci_adi", "öğrenci", "ad soyad"):
+                ogrenciler.append(isim)
 
     # 2. Kayitlar sekmesi
     beklenen_kolonlar = ["Tarih", "Ogrenci", "Alan", "Ders", "Hedef", "Puan", "Not"]
-    try:
-        kayit_satirlar = gsheet_json_satirlari_getir(sheet_id, "Kayitlar")
-        if kayit_satirlar and str(kayit_satirlar[0][0]).lower() in ("tarih", "date"):
-            kayit_satirlar = kayit_satirlar[1:]
+    if "Kayitlar" in sayfalar and not sayfalar["Kayitlar"].empty:
+        df_ham = sayfalar["Kayitlar"].copy()
+        ilk_hucre = str(df_ham.iloc[0, 0] or "").strip().lower()
+        if ilk_hucre in ("tarih", "date"):
+            df_kayit = df_ham.iloc[1:, :7].copy()
+        else:
+            df_kayit = df_ham.iloc[:, :7].copy()
 
-        duzenli_satirlar = [(s + ["", "", "", "", "", "", ""])[:7] for s in kayit_satirlar]
-        df_kayit = pd.DataFrame(duzenli_satirlar, columns=beklenen_kolonlar)
-    except Exception as e:
-        st.error(f"Kayitlar sekmesi okunamadı: {e}")
+        while df_kayit.shape[1] < 7:
+            df_kayit[df_kayit.shape[1]] = ""
+        df_kayit.columns = beklenen_kolonlar
+    else:
         df_kayit = pd.DataFrame(columns=beklenen_kolonlar)
 
     df_kayit["Tarih"] = df_kayit["Tarih"].fillna("").astype(str).str.strip()
