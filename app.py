@@ -31,6 +31,15 @@ SHEET_ID = get_secret("SHEET_ID", DEFAULT_SHEET_ID)
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "")
 
 
+def esnek_tarih_ayikla(tarih_metni):
+    metin = str(tarih_metni or "").strip()
+    if not metin:
+        return pd.NaT
+    if re.match(r"^\d{4}-\d{2}-\d{2}", metin):
+        return pd.to_datetime(metin, format="mixed", dayfirst=False, errors="coerce")
+    return pd.to_datetime(metin, format="mixed", dayfirst=True, errors="coerce")
+
+
 def gsheet_excel_yukle(sheet_id):
     """
     Google Sheets'i gviz sorgu filtresine takılmadan doğrudan XLSX olarak indirir.
@@ -38,8 +47,7 @@ def gsheet_excel_yukle(sheet_id):
     77-80. satırlardaki 2. ölçümler asla boş dönmez.
     """
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
-    tum_sayfalar = pd.read_excel(url, sheet_name=None, header=None, dtype=str)
-    return tum_sayfalar
+    return pd.read_excel(url, sheet_name=None, header=None, dtype=str)
 
 
 @st.cache_data(ttl=15)
@@ -218,7 +226,7 @@ def doks_verilerini_hazirla(df_kayit, ogrenci_listesi):
     return df_okuma, df_doks_ozet
 
 
-# ==================== OPENAI PEDAGOJİK RAPOR ÜRETİCİ (EK PAKET GEREKTİRMEZ) ====================
+# ==================== OPENAI PEDAGOJİK RAPOR ÜRETİCİ ====================
 def openai_pedagojik_yorum_uret(ogrenci_adi, kayit_ozeti_metni):
     if not OPENAI_API_KEY:
         return "⚠️ Streamlit Secrets veya ortam değişkenlerinde `OPENAI_API_KEY` tanımlı değil."
