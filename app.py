@@ -44,63 +44,28 @@ def gsheet_export_csv_url(sheet_id, sheet_name):
 
 
 @st.cache_data(ttl=30)
-def verileri_yukle(sheet_id):
-    # 1. Ogrenciler sekmesi (Başlık olmadan 1. satırdan 28. satıra kadar)
-    ogrenciler = []
-    try:
-        df_ogr = pd.read_csv(gsheet_export_csv_url(sheet_id, "Ogrenciler"), header=None, dtype=str)
-        if not df_ogr.empty:
-            ogrenciler = (
-                df_ogr.iloc[:, 0]
-                .dropna()
-                .astype(str)
-                .str.strip()
-                .tolist()
-            )
-            ogrenciler = [o for o in ogrenciler if o and o.lower() not in ("ogrenci", "ogrenci_adi", "öğrenci", "ad soyad")]
-    except Exception as e:
-        st.warning(f"Öğrenci listesi okunurken uyarı: {e}")
+def gsheet_json_satirlari_getir(sheet_id, sheet_name):
+    encoded_name = urllib.parse.quote(sheet_name)
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:json&sheet={encoded_name}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        ham_metin = resp.read().decode("utf-8")
 
-    # 2. Kayitlar sekmesi (headers=0 ve dtype=str ile tüm hücreleri metin olarak al)
-    try:
-        df_ham = pd.read_csv(gsheet_export_csv_url(sheet_id, "Kayitlar"), header=None, dtype=str)
-    except Exception as e:
-        st.error(f"Kayitlar sekmesi okunamadı: {e}")
-        df_ham = pd.DataFrame()
-
-    beklenen_kolonlar = ["Tarih", "Ogrenci", "Alan", "Ders", "Hedef", "Puan", "Not"]
-    if df_ham.empty:
-        df_kayit = pd.DataFrame(columns=beklenen_kolonlar)
-    else:
-        # İlk satır başlık satırıysa ('Tarih', 'Ogrenci_Adi' vb.) atla
-        ilk_hucre = str(df_ham.iloc[0, 0]).strip().lower()
-        if ilk_hucre in ("tarih", "date"):
-            df_kayit = df_ham.iloc[1:, :7].copy()
-        else:
-            df_kayit = df_ham.iloc[:, :7].copy()
-
-        while df_kayit.shape[1] < 7:
-            df_kayit[df_kayit.shape[1]] = ""
-        df_kayit.columns = beklenen_kolonlar
-
-    df_kayit["Tarih"] = df_kayit["Tarih"].fillna("").astype(str).str.strip()
-    df_kayit["Ogrenci"] = df_kayit["Ogrenci"].fillna("").astype(str).str.strip()
-    df_kayit["Alan"] = df_kayit["Alan"].fillna("Akademik").astype(str).str.strip()
-    df_kayit["Ders"] = df_kayit["Ders"].fillna("Genel").astype(str).str.strip()
-    df_kayit["Hedef"] = df_kayit["Hedef"].fillna("").astype(str).str.strip()
-    df_kayit["Puan"] = pd.to_numeric(df_kayit["Puan"], errors="coerce").fillna(0)
-    df_kayit["Not"] = df_kayit["Not"].fillna("").astype(str).str.strip()
-    df_kayit["Tarih_DT"] = pd.to_datetime(df_kayit["Tarih"], dayfirst=True, errors="coerce")
-
-    if not ogrenciler and not df_kayit.empty:
-        ogrenciler = sorted([o for o in df_kayit["Ogrenci"].unique() if o])
-
-    try:
-        df_hedef = pd.read_csv(gsheet_export_csv_url(sheet_id, "Hedefler"), header=0, dtype=str)
-    except Exception:
-        df_hedef = pd.DataFrame()
-
-    return ogrenciler, df_kayit, df_hedef
+    veri = json.loads(ham_metin[ham_metin.find("{"):ham_metin.rfind("}") + 1])
+    satirlar = []
+    for row in veri.get("table", {}).get("rows", []):
+        satir = []
+        for cell in (row.get("c") or []):
+            if cell is None:
+                satir.append("")
+            elif cell.get("f") is not None:
+                satir.append(str(cell["f"]).strip())
+            elif cell.get("v") is not None:
+                satir.append(str(cell["v"]).strip())
+            else:
+                satir.append("")
+        satirlar.append(satir)
+    return satirlar
 
 # ==================== DOKS & DOĞRULUK AYIKLAMA MOTORU ====================
 def doks_verisi_ayikla(not_degeri):
