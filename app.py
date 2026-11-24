@@ -2,16 +2,11 @@ import os
 import re
 import json
 import urllib.parse
+import urllib.request
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-import urllib.request
-
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
 
 # ==================== SAYFA AYARLARI ====================
 st.set_page_config(
@@ -36,15 +31,11 @@ SHEET_ID = get_secret("SHEET_ID", DEFAULT_SHEET_ID)
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "")
 
 
-def gsheet_export_csv_url(sheet_id, sheet_name):
-    # gviz yerine doğrudan Google Sheets CSV export uç noktası kullanılır;
-    # böylece hem saf sayı ('116') hem metin ('90 (%100)') içeren hücreler asla boş dönmez.
-    encoded_name = urllib.parse.quote(sheet_name)
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}&headers=0"
-
-
-@st.cache_data(ttl=30)
 def gsheet_json_satirlari_getir(sheet_id, sheet_name):
+    """
+    Google Sheets'ten veriyi CSV yerine JSON olarak çeker; böylece aynı sütunda
+    hem saf sayı ('116') hem metin ('90 (%100)') olsa bile hiçbir hücre boş dönmez.
+    """
     encoded_name = urllib.parse.quote(sheet_name)
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:json&sheet={encoded_name}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -67,10 +58,60 @@ def gsheet_json_satirlari_getir(sheet_id, sheet_name):
         satirlar.append(satir)
     return satirlar
 
+
+def esnek_tarih_ayikla(tarih_metni):
+    metin = str(tarih_metni or "").strip()
+    if not metin:
+        return pd.NaT
+    if re.match(r"^\d{4}-\d{2}-\d{2}", metin):
+        return pd.to_datetime(metin, format="mixed", dayfirst=False, errors="coerce")
+    return pd.to_datetime(metin, format="mixed", dayfirst=True, errors="coerce")
+
+
+@st.cache_data(ttl=15)
+def verileri_yukle(sheet_id):
+    # 1. Ogrenciler sekmesi (1. satırdan itibaren 28 öğrenci)
+    ogrenciler = []
+    try:
+        ogr_satirlar = gsheet_json_satirlari_getir(sheet_id, "Ogrenciler")
+        for s in ogr_satirlar:
+            if s and s[0] and s[0].lower() not in ("ogrenci", "ogrenci_adi", "öğrenci", "ad soyad"):
+                ogrenciler.append(s[0])
+    except Exception as e:
+        st.warning(f"Öğrenci listesi okunurken uyarı: {e}")
+
+    # 2. Kayitlar sekmesi
+    beklenen_kolonlar = ["Tarih", "Ogrenci", "Alan", "Ders", "Hedef", "Puan", "Not"]
+    try:
+        kayit_satirlar = gsheet_json_satirlari_getir(sheet_id, "Kayitlar")
+        if kayit_satirlar and str(kayit_satirlar[0][0]).lower() in ("tarih", "date"):
+            kayit_satirlar = kayit_satirlar[1:]
+
+        duzenli_satirlar = [(s + ["", "", "", "", "", "", ""])[:7] for s in kayit_satirlar]
+        df_kayit = pd.DataFrame(duzenli_satirlar, columns=beklenen_kolonlar)
+    except Exception as e:
+        st.error(f"Kayitlar sekmesi okunamadı: {e}")
+        df_kayit = pd.DataFrame(columns=beklenen_kolonlar)
+
+    df_kayit["Tarih"] = df_kayit["Tarih"].fillna("").astype(str).str.strip()
+    df_kayit["Ogrenci"] = df_kayit["Ogrenci"].fillna("").astype(str).str.strip()
+    df_kayit["Alan"] = df_kayit["Alan"].fillna("Akademik").astype(str).str.strip()
+    df_kayit["Ders"] = df_kayit["Ders"].fillna("Genel").astype(str).str.strip()
+    df_kayit["Hedef"] = df_kayit["Hedef"].fillna("").astype(str).str.strip()
+    df_kayit["Puan"] = pd.to_numeric(df_kayit["Puan"], errors="coerce").fillna(0)
+    df_kayit["Not"] = df_kayit["Not"].fillna("").astype(str).str.strip()
+    df_kayit["Tarih_DT"] = df_kayit["Tarih"].apply(esnek_tarih_ayikla)
+
+    if not ogrenciler and not df_kayit.empty:
+        ogrenciler = sorted([o for o in df_kayit["Ogrenci"].unique() if o])
+
+    return ogrenciler, df_kayit, pd.DataFrame()
+
+
 # ==================== DOKS & DOĞRULUK AYIKLAMA MOTORU ====================
 def doks_verisi_ayikla(not_degeri):
     """
-    Hem eski ('65 kelime', 'DOKS: 72 (%95)') hem yeni ('90 (%100)', '85 (%96)', '90')
+    Hem eski ('65 kelime', 'DOKS: 72 (%95)', '116') hem yeni ('90 (%100)', '85 (%96)')
     formatlarını tip güvenli şekilde ayıklar.
     """
     if pd.isna(not_degeri):
@@ -200,14 +241,11 @@ def doks_verilerini_hazirla(df_kayit, ogrenci_listesi):
     return df_okuma, df_doks_ozet
 
 
-# ==================== OPENAI PEDAGOJİK RAPOR ÜRETİCİ ====================
+# ==================== OPENAI PEDAGOJİK RAPOR ÜRETİCİ (EK PAKET GEREKTİRMEZ) ====================
 def openai_pedagojik_yorum_uret(ogrenci_adi, kayit_ozeti_metni):
     if not OPENAI_API_KEY:
         return "⚠️ Streamlit Secrets veya ortam değişkenlerinde `OPENAI_API_KEY` tanımlı değil."
-    if OpenAI is None:
-        return "⚠️ `openai` kütüphanesi yüklü değil. `requirements.txt` dosyasına `openai` ekleyin."
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
     prompt = f"""
 Sen Türkiye Yüzyılı Maarif Modeli (TYMM) ve 2. sınıf biçimlendirici değerlendirme süreçlerinde uzman bir ilkokul öğretmenisin.
 Aşağıda 2-C sınıfı öğrencisi **{ogrenci_adi}** için toplanan gözlem, çalışma kâğıdı, SRSD yazma, günlük ödev ve DOKS (okuma akıcılığı) verileri yer almaktadır:
@@ -220,19 +258,34 @@ Lütfen bu verilere dayanarak:
 3. **Öğretmen & Veli İçin Eylem Önerisi:** Evde ve sınıfta uygulanabilecek 2-3 kısa, somut etkinlik önerisi yaz.
 4. **e-Okul Gelişim Raporu Taslağı:** Dönem sonu öğrenci gelişim raporuna doğrudan yapıştırılabilecek 3-4 cümlelik resmi, sıcak ve pedagojik bir değerlendirme paragrafı oluştur.
 """
+
+    son_hata = ""
     for model_adi in ["gpt-4o-mini", "gpt-4o"]:
         try:
-            resp = client.chat.completions.create(
-                model=model_adi,
-                temperature=0.3,
-                messages=[
+            veri = json.dumps({
+                "model": model_adi,
+                "temperature": 0.3,
+                "messages": [
                     {"role": "system", "content": "Türkiye Yüzyılı Maarif Modeli (TYMM) uzmanı ilkokul öğretmeni asistanı."},
                     {"role": "user", "content": prompt}
                 ]
+            }).encode("utf-8")
+
+            istek = urllib.request.Request(
+                "https://api.openai.com/v1/chat/completions",
+                data=veri,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {OPENAI_API_KEY}"
+                },
+                method="POST"
             )
-            return resp.choices[0].message.content
+            with urllib.request.urlopen(istek, timeout=45) as yanit:
+                sonuc = json.loads(yanit.read().decode("utf-8"))
+                return sonuc["choices"][0]["message"]["content"]
         except Exception as e:
             son_hata = str(e)
+
     return f"OpenAI API Hatası: {son_hata}"
 
 
@@ -309,7 +362,6 @@ with tab_doks:
                 aggfunc="last"
             ).reindex(ogrenci_listesi)
 
-            # Ölçüm sütunlarını sayısal sıraya göre diz
             sirali_kolonlar = sorted(
                 pivot_doks.columns,
                 key=lambda x: int(re.search(r'(\d+)', str(x)).group(1)) if re.search(r'(\d+)', str(x)) else 0
