@@ -60,13 +60,43 @@ def doks_verilerini_hazirla(df_kayit, ogrenci_listesi):
     maske = df_kayit["Hedef"].str.lower().str.contains("okuma|akıcı|akici", regex=True)
     df_okuma = df_kayit[maske].copy()
 
-    def ayikla(not_str):
-        s = str(not_str or "").strip()
-        m_doks = re.search(r"(\d+)", s)
-        m_yuzde = re.search(r"\(\s*%?\s*(\d+(?:[.,]\d+)?)\s*%?\s*\)", s) or re.search(r"%\s*(\d+(?:[.,]\d+)?)", s)
-        doks = int(m_doks.group(1)) if m_doks else None
-        yuzde = float(m_yuzde.group(1).replace(",", ".")) if m_yuzde else None
-        return pd.Series([doks, yuzde])
+def doks_verisi_ayikla(not_metni):
+    if pd.isna(not_metni) or not str(not_metni).strip():
+        return None, None
+    
+    metin = str(not_metni).strip()
+    
+    # 1. Doğruluk yüzdesini yakala: örn. (%100), %95, (%98.5)
+    yuzde = None
+    yuzde_eslesme = re.search(r'%\s*(\d+(?:[.,]\d+)?)', metin)
+    if yuzde_eslesme:
+        yuzde = float(yuzde_eslesme.group(1).replace(',', '.'))
+        # Yüzde ifadesini metinden geçici olarak temizle ki kelime sayısıyla karışmasın
+        metin_temiz = re.sub(r'\(?\s*%\s*\d+(?:[.,]\d+)?\s*\)?', '', metin).strip()
+    else:
+        metin_temiz = metin
+
+    # 2. Kelime sayısını (DOKS) yakala:
+    # Öncelik: açıkça "kelime" veya "DOKS" etiketi varsa onu al
+    etiketli = re.search(r'(?:DOKS\s*[:=-]?\s*(\d+))|(\d+)\s*(?:kelime|dk|dakika)', metin_temiz, re.IGNORECASE)
+    if etiketli:
+        doks = int(etiketli.group(1) or etiketli.group(2))
+        return doks, yuzde
+
+    # İkinci durum: Not doğrudan sayı ile başlıyorsa (örn: "90 (%100)" -> temizlenince "90")
+    baslangic_sayi = re.match(r'^(\d{1,3})\b', metin_temiz)
+    if baslangic_sayi:
+        doks = int(baslangic_sayi.group(1))
+        return doks, yuzde
+
+    # Son çare: Metindeki makul aralıktaki (5-300 arası) ilk sayıyı al
+    genel_sayi = re.search(r'\b(\d{1,3})\b', metin_temiz)
+    if genel_sayi:
+        val = int(genel_sayi.group(1))
+        if 5 <= val <= 300:
+            return val, yuzde
+
+    return None, yuzde
 
     if not df_okuma.empty:
         df_okuma[["DOKS", "Dogruluk"]] = df_okuma["Not"].apply(ayikla)
