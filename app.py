@@ -55,7 +55,6 @@ def verileri_yukle():
 
     return df_kayit, ogrenci_listesi, df_hedef
 
-# ==================== DOKS & DOĞRULUK AYIKLAYICI ====================
 def doks_verisi_ayikla(not_degeri):
     if pd.isna(not_degeri):
         return None, None
@@ -91,8 +90,9 @@ def doks_verisi_ayikla(not_degeri):
 
 
 def doks_verilerini_hazirla(df_kayit, ogrenci_listesi):
+    bos_ozet_kolonlar = ["Öğrenci", "İlk DOKS", "Son DOKS", "Fark", "Ölçüm Sayısı", "Son Doğruluk (%)"]
     if df_kayit is None or df_kayit.empty:
-        return pd.DataFrame(), pd.DataFrame(columns=["Ogrenci", "Ilk_DOKS", "Son_DOKS", "Fark", "Olcum_Sayisi", "Son_Dogruluk"])
+        return pd.DataFrame(), pd.DataFrame(columns=bos_ozet_kolonlar)
 
     df = df_kayit.copy()
     for col in ["Tarih", "Ogrenci", "Alan", "Ders", "Hedef", "Puan", "Not"]:
@@ -101,7 +101,6 @@ def doks_verilerini_hazirla(df_kayit, ogrenci_listesi):
 
     # Okuma akıcılığı / DOKS kayıtlarını filtrele
     hedef_str = df["Hedef"].fillna("").astype(str)
-    ders_str = df["Ders"].fillna("").astype(str)
     not_str = df["Not"].fillna("").astype(str)
 
     maske = (
@@ -111,24 +110,23 @@ def doks_verilerini_hazirla(df_kayit, ogrenci_listesi):
 
     df_okuma = df[maske].copy()
     if df_okuma.empty:
-        return pd.DataFrame(), pd.DataFrame(columns=["Ogrenci", "Ilk_DOKS", "Son_DOKS", "Fark", "Olcum_Sayisi", "Son_Dogruluk"])
+        return pd.DataFrame(), pd.DataFrame(columns=bos_ozet_kolonlar)
 
-    # DOKS ve doğruluk yüzdesini güvenli şekilde ayıkla
+    # DOKS ve doğruluk yüzdesini ayıkla
     ayiklanan = df_okuma["Not"].apply(doks_verisi_ayikla)
     df_okuma["DOKS"] = [x[0] for x in ayiklanan]
     df_okuma["Dogruluk"] = [x[1] for x in ayiklanan]
 
-    # Sadece geçerli sayısal DOKS değeri olan satırları tut
     df_okuma = df_okuma.dropna(subset=["DOKS"]).copy()
     df_okuma["DOKS"] = pd.to_numeric(df_okuma["DOKS"], errors="coerce")
     df_okuma = df_okuma.dropna(subset=["DOKS"]).copy()
     df_okuma["DOKS"] = df_okuma["DOKS"].astype(int)
 
-    # Tarih sıralaması için tip güvenli datetime dönüşümü
+    # Tarih sıralaması
     df_okuma["Tarih_DT"] = pd.to_datetime(df_okuma["Tarih"].astype(str), dayfirst=True, errors="coerce")
     df_okuma = df_okuma.sort_values(["Tarih_DT", "Tarih"], na_position="last").reset_index(drop=True)
 
-    # Tüm 28 öğrenci için özet tablosu (İlk / Son / Fark)
+    # Tüm 28 öğrenci için özet tablosu (app.py sütun adlarıyla birebir uyumlu)
     ozet_satirlar = []
     for ogr in ogrenci_listesi:
         ogr_df = df_okuma[df_okuma["Ogrenci"].astype(str).str.strip() == str(ogr).strip()]
@@ -138,26 +136,25 @@ def doks_verilerini_hazirla(df_kayit, ogrenci_listesi):
             fark = son_doks - ilk_doks
             son_dog = ogr_df["Dogruluk"].dropna().iloc[-1] if not ogr_df["Dogruluk"].dropna().empty else None
             ozet_satirlar.append({
-                "Ogrenci": ogr,
-                "Ilk_DOKS": ilk_doks,
-                "Son_DOKS": son_doks,
+                "Öğrenci": ogr,
+                "İlk DOKS": ilk_doks,
+                "Son DOKS": son_doks,
                 "Fark": fark,
-                "Olcum_Sayisi": int(len(ogr_df)),
-                "Son_Dogruluk": son_dog
+                "Ölçüm Sayısı": int(len(ogr_df)),
+                "Son Doğruluk (%)": son_dog
             })
         else:
             ozet_satirlar.append({
-                "Ogrenci": ogr,
-                "Ilk_DOKS": None,
-                "Son_DOKS": None,
+                "Öğrenci": ogr,
+                "İlk DOKS": None,
+                "Son DOKS": None,
                 "Fark": None,
-                "Olcum_Sayisi": 0,
-                "Son_Dogruluk": None
+                "Ölçüm Sayısı": 0,
+                "Son Doğruluk (%)": None
             })
 
     df_doks_ozet = pd.DataFrame(ozet_satirlar)
     return df_okuma, df_doks_ozet
-
 # ==================== HIZLANDIRILMIŞ FLASH-LITE GEMINI YÖNETİCİSİ ====================
 @st.cache_data(ttl=21600)
 def aktif_lite_modelleri_getir(api_key):
