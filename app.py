@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+import urllib.request
 
 try:
     from openai import OpenAI
@@ -35,17 +36,19 @@ SHEET_ID = get_secret("SHEET_ID", DEFAULT_SHEET_ID)
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "")
 
 
-def gsheet_csv_url(sheet_id, sheet_name):
+def gsheet_export_csv_url(sheet_id, sheet_name):
+    # gviz yerine doğrudan Google Sheets CSV export uç noktası kullanılır;
+    # böylece hem saf sayı ('116') hem metin ('90 (%100)') içeren hücreler asla boş dönmez.
     encoded_name = urllib.parse.quote(sheet_name)
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}&headers=0"
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=30)
 def verileri_yukle(sheet_id):
-    # 1. Ogrenciler sekmesi (Başlık satırı olmadan 1. satırdan itibaren 28 öğrenci)
+    # 1. Ogrenciler sekmesi (Başlık olmadan 1. satırdan 28. satıra kadar)
     ogrenciler = []
     try:
-        df_ogr = pd.read_csv(gsheet_csv_url(sheet_id, "Ogrenciler"), header=None)
+        df_ogr = pd.read_csv(gsheet_export_csv_url(sheet_id, "Ogrenciler"), header=None, dtype=str)
         if not df_ogr.empty:
             ogrenciler = (
                 df_ogr.iloc[:, 0]
@@ -54,26 +57,31 @@ def verileri_yukle(sheet_id):
                 .str.strip()
                 .tolist()
             )
-            ogrenciler = [o for o in ogrenciler if o and o.lower() not in ("ogrenci", "öğrenci", "ad soyad", "isim")]
+            ogrenciler = [o for o in ogrenciler if o and o.lower() not in ("ogrenci", "ogrenci_adi", "öğrenci", "ad soyad")]
     except Exception as e:
         st.warning(f"Öğrenci listesi okunurken uyarı: {e}")
 
-    # 2. Kayitlar sekmesi
+    # 2. Kayitlar sekmesi (headers=0 ve dtype=str ile tüm hücreleri metin olarak al)
     try:
-        df_kayit = pd.read_csv(gsheet_csv_url(sheet_id, "Kayitlar"))
+        df_ham = pd.read_csv(gsheet_export_csv_url(sheet_id, "Kayitlar"), header=None, dtype=str)
     except Exception as e:
         st.error(f"Kayitlar sekmesi okunamadı: {e}")
-        df_kayit = pd.DataFrame(columns=["Tarih", "Ogrenci", "Alan", "Ders", "Hedef", "Puan", "Not"])
+        df_ham = pd.DataFrame()
 
-    # Sütun isimlerini normalize et
     beklenen_kolonlar = ["Tarih", "Ogrenci", "Alan", "Ders", "Hedef", "Puan", "Not"]
-    if len(df_kayit.columns) >= 7:
-        df_kayit = df_kayit.iloc[:, :7].copy()
-        df_kayit.columns = beklenen_kolonlar
+    if df_ham.empty:
+        df_kayit = pd.DataFrame(columns=beklenen_kolonlar)
     else:
-        for col in beklenen_kolonlar:
-            if col not in df_kayit.columns:
-                df_kayit[col] = ""
+        # İlk satır başlık satırıysa ('Tarih', 'Ogrenci_Adi' vb.) atla
+        ilk_hucre = str(df_ham.iloc[0, 0]).strip().lower()
+        if ilk_hucre in ("tarih", "date"):
+            df_kayit = df_ham.iloc[1:, :7].copy()
+        else:
+            df_kayit = df_ham.iloc[:, :7].copy()
+
+        while df_kayit.shape[1] < 7:
+            df_kayit[df_kayit.shape[1]] = ""
+        df_kayit.columns = beklenen_kolonlar
 
     df_kayit["Tarih"] = df_kayit["Tarih"].fillna("").astype(str).str.strip()
     df_kayit["Ogrenci"] = df_kayit["Ogrenci"].fillna("").astype(str).str.strip()
@@ -84,18 +92,15 @@ def verileri_yukle(sheet_id):
     df_kayit["Not"] = df_kayit["Not"].fillna("").astype(str).str.strip()
     df_kayit["Tarih_DT"] = pd.to_datetime(df_kayit["Tarih"], dayfirst=True, errors="coerce")
 
-    # Eğer Ogrenciler boşsa Kayitlar'dan tamamla
     if not ogrenciler and not df_kayit.empty:
         ogrenciler = sorted([o for o in df_kayit["Ogrenci"].unique() if o])
 
-    # 3. Hedefler sekmesi (opsiyonel)
     try:
-        df_hedef = pd.read_csv(gsheet_csv_url(sheet_id, "Hedefler"))
+        df_hedef = pd.read_csv(gsheet_export_csv_url(sheet_id, "Hedefler"), header=0, dtype=str)
     except Exception:
         df_hedef = pd.DataFrame()
 
     return ogrenciler, df_kayit, df_hedef
-
 
 # ==================== DOKS & DOĞRULUK AYIKLAMA MOTORU ====================
 def doks_verisi_ayikla(not_degeri):
